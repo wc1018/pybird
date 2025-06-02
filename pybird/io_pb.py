@@ -63,7 +63,7 @@ class ReadWrite(object):
 
     def config(self, c, fd_sky):
         options_for_correlator = ["output", "multipole", "km", "kr", "nd", 
-                                  "eft_basis", "with_stoch", "with_nnlo_counterterm","EFTDE","fluid_equation_of_state",
+                                  "eft_basis", "with_stoch", "with_nnlo_counterterm","EFTDE", "with_exact_time", "fluid_equation_of_state",
                                   "with_ap", "with_survey_mask", "with_binning", "with_wedge", "with_redshift_bin"]
 
         fc_sky = [] # skylist of formatted config dict for Correlator

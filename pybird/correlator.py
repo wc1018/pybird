@@ -76,33 +76,12 @@ class Correlator(object):
             "wa_fld": Option("wa_fld", float,
                 description="w0wa",
                 default=0.) ,
-            
-            "with_Y1_G1t_V12t_G1": Option("with_Y1_G1t_V12t_G1", bool,
-                description="Whether to provide Y1, G1t, V12t, G1. If with_exact_time but w0wa not provided, with_Y1_G1t_V12t_G1 must be true",
-                default=False) ,
-            
-            "Y1":Option("Y1", float,
-                description="Y1",
-                default=None) ,
-
-            "G1t":Option("G1t", float,
-                description="G1t",
-                default=None) ,
-            
-            "V12t":Option("V12t", float,
-                description="V12t",
-                default=None) ,
-            
-            "G1":Option("G1", float,
-                description="G1",
-                default=None) ,
-            
             "fluid_equation_of_state": Option("fluid_equation_of_state",str,
                 description="either w0wa or chebyshev, for LCDM set w0wa with w0=-1,wa=0", 
                 default='w0wa'),
             "EFTDE": Option("EFTDE",bool,
                 description="where consider EFTDE in greenfunction", 
-                default=False) ,
+                default=False),
             
             "Dz": Option("Dz", (list, np.ndarray),
                 description="Scale independent growth function over redshift bin. To specify if \'with_redshift_bin\' is True.",
@@ -185,9 +164,6 @@ class Correlator(object):
             "with_exact_time": Option("with_exact_time", bool,
                 description="Exact time dependence or EdS approximation.",
                 default=False) ,
-            # "with_Y1_G1t_V12t_G1": Option("with_Y1_G1t_V12t_G1", bool,
-            #     description="Whether to provide Y1, G1t, V12t, G1. If with_exact_time but w0wa not provided, with_Y1_G1t_V12t_G1 must be true",
-            #     default=False) ,
             "with_quintessence": Option("with_quintessence", bool,
                 description="Clustering quintessence.",
                 default=False) ,
@@ -270,8 +246,8 @@ class Correlator(object):
                 description="either w0wa or chebyshev, for LCDM set w0wa with w0=-1,wa=0", 
                 default='w0wa'),
             "EFTDE": Option("EFTDE",bool,
-                description="whether to consider EFTDE in greenfunction", 
-                default=False),
+                description="where consider EFTDE in greenfunction", 
+                default= False),
         }
 
         if config_dict is not None: self.set(config_dict, load_engines=load_engines)
@@ -666,6 +642,7 @@ class Correlator(object):
                         cosmo['alphaM'] = M.get_current_derived_parameters(['parameters_2_smg_real_3'])['parameters_2_smg_real_3']
                         cosmo['alphaT'] = M.get_current_derived_parameters(['parameters_2_smg_real_4'])['parameters_2_smg_real_4']
                         cosmo['EFTDE'] = True
+                        # print('alphaB:',cosmo['alphaB'],'alphaM:', cosmo['alphaM'], 'alphaT:', cosmo['alphaT'])
                 
             if self.c["with_quintessence"]: 
                 # starting deep inside matter domination and evolving to the total adiabatic linear power spectrum. 

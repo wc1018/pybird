@@ -6,14 +6,15 @@ from scipy.interpolate import CubicSpline
 # from jax.numpy import exp,log,linspace
 # jax.config.update("jax_enable_x64", True)
 from scipy.integrate import odeint
+from scipy.integrate import solve_ivp
 from scipy.special import erf
-from numpy import exp,log,linspace,array,sqrt,pi
+from numpy import exp,log,linspace,array,sqrt,pi,isfinite
 
 # numerical D,DD+,D-,DD-
 class GreenFunction(object):
 
     def __init__(self, Omega0_m, fluid_equation_of_state = 'w0wa',EoS_dict=None, quintessence=False, EFTDE=False,parameterizations='propto_omega',
-                 Omega0_k=0., vectorize=False,
+                 Omega0_k=0., vectorize=False,convention = 'hiclass',EFTonly=False,future_to_past=True,
                  xin=-12.,xfin=0.):
         self.vectorize = vectorize
         self.Omega0_m = Omega0_m
@@ -30,6 +31,11 @@ class GreenFunction(object):
         
         self.quintessence = quintessence
         self.EFTDE = EFTDE
+        self.convention = convention
+        self.future_to_past = future_to_past
+
+        if self.quintessence and self.EFTDE:
+            raise ValueError('Couldnot quintessence with EFTDE')
 
 
         self.fluid_equation_of_state = fluid_equation_of_state
@@ -56,7 +62,7 @@ class GreenFunction(object):
 
 
         if self.EFTDE: self.EFTDE_alphas(EoS_dict=EoS_dict,parameterizations=parameterizations)
-        self.interpD()
+        if not EFTonly: self.interpD()
 
 
     def EFTDE_alphas(self,EoS_dict=None,parameterizations='propto_omega'):
@@ -66,7 +72,13 @@ class GreenFunction(object):
             # if EFTDE_value are all zero, the ode will break, we then enforece alphaB=1
             EFTDE_value[0]=1.
             print('You input no EFT parameters, we use default 1,0,0,0,0,0')
-        
+        if self.convention == 'hiclass' and 'alphaB' in EoS_dict.keys():
+            # we should use vernizzi convention
+            # alpha_B^v = -1/2*alpha_B^hi
+            # alpha_B0^v Omega_d/Omega_d0 = -1/2 alpha_B0^hi*Omega_d
+            # alpha_B0^v = -1/2 alpha_B0^hi*Omega_d0
+            # where alpha_B0^hi is we get from hiclass
+            EFTDE_value[0] = -1./2.*EoS_dict['alphaB']*(1.-self.Omega0_m)
         if parameterizations=='constant':
             self.alpha_B = lambda x : EFTDE_value[0]
             self.alpha_T = lambda x : EFTDE_value[1]
@@ -82,15 +94,15 @@ class GreenFunction(object):
             self.dalpha_V2dx = lambda x : 0
             self.dalpha_V3dx = lambda x : 0
         elif parameterizations == 'propto_omega':
-            # alpha = gamma*Omega_{dark energy}
-            self.alpha_B = lambda x : EFTDE_value[0]*self.Ode(x)
+            # use vernizzi convention alpha = c*Omega_de/Omega_de0
+            self.alpha_B = lambda x : EFTDE_value[0]*self.Ode(x)/(1.-self.Omega0_m)
             self.alpha_T = lambda x : EFTDE_value[1]*self.Ode(x)
             self.alpha_M = lambda x : EFTDE_value[2]*self.Ode(x)
             self.alpha_V1 = lambda x : EFTDE_value[3]*self.Ode(x)
             self.alpha_V2 = lambda x : EFTDE_value[4]*self.Ode(x)
             self.alpha_V3 = lambda x : EFTDE_value[5]*self.Ode(x)
 
-            self.dalpha_Bdx = lambda x : EFTDE_value[0]*self.dOdedx(x)
+            self.dalpha_Bdx = lambda x : EFTDE_value[0]*self.dOdedx(x)/(1.-self.Omega0_m)
             self.dalpha_Tdx = lambda x : EFTDE_value[1]*self.dOdedx(x)
             self.dalpha_Mdx = lambda x : EFTDE_value[2]*self.dOdedx(x)
             self.dalpha_V1dx = lambda x : EFTDE_value[3]*self.dOdedx(x)
@@ -101,11 +113,14 @@ class GreenFunction(object):
     def ksai(self,x): return self.alpha_B(x)*(1+self.alpha_T(x))+self.alpha_T(x)-self.alpha_M(x)
     def nu(self,x): 
         dHdt_over_H2 = 3/2*(-self.w(x)*(1-self.Om(x))-1)
-        return -(
+        temp = -(
                 (1+self.alpha_B(x))*(
                     self.alpha_B(x)*(1+self.alpha_T(x))+self.alpha_T(x)-self.alpha_M(x)+dHdt_over_H2)
                     +self.dalpha_Bdx(x)+3/2*self.Om(x)
                     )
+        if temp == 0.: temp+=1e-16
+        #print(temp)
+        return temp
     def C2(self,x): return -self.nu(x)-self.alpha_B(x)*(self.ksai(x)+self.alpha_T(x)-self.alpha_M(x))
     def C3(self,x): 
         dHdt_over_H2 = 3/2*(-self.w(x)*(1-self.Om(x))-1)
@@ -232,17 +247,10 @@ class GreenFunction(object):
         ai = exp(xi)
         afin  = exp(xfin)
         if self.EFTDE:
-            if xfin>0:
-                Di = ai
-                dDi = ai
-                Dminusi = afin**(-2)
-                dDminusi = -2.*afin**(-2.)
-            else:
-                Di = ai
-                dDi = ai
-                Dminusi = ai**(-3/2)
-                dDminusi = -3./2.*ai**(-3./2.)
-
+            Di = ai
+            dDi = ai
+            Dminusi = afin**(-2)
+            dDminusi = -2.*afin**(-2.)
         else:
             Di = ai
             dDi = ai
@@ -269,7 +277,22 @@ class GreenFunction(object):
         D_dD = (epsilon-2.)*dD+F*D
         D_y = [D_dD,D_D]
         return D_y  
+
+    def vector_field_p_solve_ivp(self, x, y):
+        a = exp(x)
+        dD, D = y
     
+        if self.EFTDE:
+            epsilon = -self.dHdx(x)/self.H(x)
+            F = 1.5 * self.Om(x) * self.mu(x)
+        else:
+            epsilon = -self.dHdx(x)/self.H(x) + self.dCdx(x)/self.C(x)
+            F = 1.5 * self.Om(x) * self.C(x)
+    
+        D_D = dD
+        D_dD = (epsilon - 2.) * dD + F * D
+        return [D_dD, D_D]
+
     def vector_field_m(self,y,x):
         a = exp(x)
         dDminus,Dminus= y
@@ -288,48 +311,97 @@ class GreenFunction(object):
         D_dDminus = (epsilon-2.)*dDminus+F*Dminus
         D_y = [D_dDminus,D_Dminus]
         return D_y  
+
+    def vector_field_m_solve_ivp(self, x, y):
+        a = exp(x)
+        dDminus, Dminus = y
+    
+        if self.EFTDE:
+            epsilon = -self.dHdx(x) / self.H(x)
+            F = 1.5 * self.Om(x) * self.mu(x)
+        else:
+            epsilon = -self.dHdx(x) / self.H(x) + self.dCdx(x) / self.C(x)
+            F = 1.5 * self.Om(x) * self.C(x)
+    
+        D_Dminus = dDminus
+        D_dDminus = (epsilon - 2.) * dDminus + F * Dminus
+        return [D_dDminus, D_Dminus]
+
     
     def interpD(self):
         x0 = self.x0
         x1 = self.xfin
         x = linspace(x0, x1, 500)
 
-        if self.EFTDE:
-            if self.xfin>0:
-                y0p,y0m = self.get_ini(x0,x1)
+        if self.EFTDE and self.future_to_past:
+            y0p,y0m = self.get_ini(x0,x1)
+            # sol_p = odeint(self.vector_field_p, array(y0p), x).T
+            # sol_m = odeint(self.vector_field_m, array(y0m), x[::-1]).T
+
+            # method = 'odeint'
+            method = 'LSODA'
+            # method =  'Radau'
+            # method='BDF'
+            if method in ['LSODA']:
+                sol_p_ivp = solve_ivp(self.vector_field_p_solve_ivp, (x[0], x[-1]), y0p, t_eval=x, method=method)
+                sol_p = sol_p_ivp.y  
+                sol_m_ivp = solve_ivp(self.vector_field_m_solve_ivp, (x[-1], x[0]), y0m, t_eval=x[::-1], method=method)
+                sol_m = sol_m_ivp.y
+            elif method in ['BDF', 'Radau']:
+                sol_p_ivp = solve_ivp(self.vector_field_p_solve_ivp, (x[0], x[-1]), y0p, t_eval=x, method=method, dense_output=True)
+                sol_p = sol_p_ivp.sol(x)  # 获取 t_eval = x 位置的解
+                
+                sol_m_ivp = solve_ivp(self.vector_field_m_solve_ivp, (x[-1], x[0]), y0m, t_eval=x[::-1], method=method, dense_output=True)
+                sol_m = sol_m_ivp.sol(x[::-1])  # 获取 t_eval = x[::-1] 位置的解
+            elif method == 'odeint':
                 sol_p = odeint(self.vector_field_p, array(y0p), x).T
                 sol_m = odeint(self.vector_field_m, array(y0m), x[::-1]).T
+                
+            # print(sol_p.shape, sol_p[0])
 
-                self.Darr = sol_p[1]
-                self.dDarr = sol_p[0]/exp(x)  #dDda
-                self.Dminusarr1 = sol_m[1][::-1]
-                self.dDminusarr = sol_m[0][::-1]
-                self.Dminusarr = self.Dminusarr1/(self.Dminusarr1[0]/(exp(-3*self.x0/2)))
-                self.dDminusarr = self.dDminusarr/(self.Dminusarr1[0]/(exp(-3*self.x0/2)))/exp(x)
-            else:
-                y0p,y0m = self.get_ini(x0,x1)
-                sol_p = odeint(self.vector_field_p, array(y0p), x).T
-                sol_m = odeint(self.vector_field_m, array(y0m), x).T
-
-                self.Darr = sol_p[1]
-                self.dDarr = sol_p[0]/exp(x)  #dDda
-                self.Dminusarr = sol_m[1]
-                self.dDminusarr = sol_m[0]/exp(x)
+            self.Darr = sol_p[1]
+            self.dDarr = sol_p[0]/exp(x)  #dDda
+            self.Dminusarr1 = sol_m[1][::-1]
+            self.dDminusarr = sol_m[0][::-1]
+            self.Dminusarr = self.Dminusarr1/(self.Dminusarr1[0]/(exp(-3*self.x0/2))+1.e-16)
+            self.dDminusarr = self.dDminusarr/(self.Dminusarr1[0]/(exp(-3*self.x0/2))+1.e-16)/exp(x)
 
         else:
             y0p,y0m = self.get_ini(x0,x1)
-            sol_p = odeint(self.vector_field_p, array(y0p), x).T
-            sol_m = odeint(self.vector_field_m, array(y0m), x).T
+            # sol_p = odeint(self.vector_field_p, array(y0p), x).T
+            # sol_m = odeint(self.vector_field_m, array(y0m), x).T
+
+            # method = 'odeint'
+            method = 'LSODA'
+            # method='BDF'
+            if method == 'LSODA':
+                sol_p_ivp = solve_ivp(self.vector_field_p_solve_ivp, (x[0], x[-1]), y0p, t_eval=x, method=method)
+                sol_p = sol_p_ivp.y  
+                sol_m_ivp = solve_ivp(self.vector_field_m_solve_ivp, (x[-1], x[0]), y0m, t_eval=x[::-1], method=method)
+                sol_m = sol_m_ivp.y
+            elif method == 'BDF':
+                sol_p_ivp = solve_ivp(self.vector_field_p_solve_ivp, (x[0], x[-1]), y0p, t_eval=x, method=method, dense_output=True)
+                sol_p = sol_p_ivp.sol(x)  # 获取 t_eval = x 位置的解
+                
+                sol_m_ivp = solve_ivp(self.vector_field_m_solve_ivp, (x[-1], x[0]), y0m, t_eval=x[::-1], method=method, dense_output=True)
+                sol_m = sol_m_ivp.sol(x[::-1])  # 获取 t_eval = x[::-1] 位置的解
+            elif method == 'odeint':
+                sol_p = odeint(self.vector_field_p, array(y0p), x).T
+                sol_m = odeint(self.vector_field_m, array(y0m), x[::-1]).T
 
             self.Darr = sol_p[1]
             self.dDarr = sol_p[0]/exp(x)  #dDda
             self.Dminusarr = sol_m[1]
             self.dDminusarr = sol_m[0]/exp(x)
 
-        self.D = CubicSpline(x,self.Darr)
-        self.DD = CubicSpline(x,self.dDarr)  #dDda(x)
-        self.Dminus = CubicSpline(x,self.Dminusarr)
-        self.DDminus = CubicSpline(x,self.dDminusarr)
+        # self.D = CubicSpline(x,self.Darr)
+        # self.DD = CubicSpline(x,self.dDarr)  #dDda(x)
+        # self.Dminus = CubicSpline(x,self.Dminusarr)
+        # self.DDminus = CubicSpline(x,self.dDminusarr)
+        self.D = CubicSpline(x[isfinite(self.Darr)],self.Darr[isfinite(self.Darr)])
+        self.DD = CubicSpline(x[isfinite(self.dDarr)],self.dDarr[isfinite(self.dDarr)])  #dDda(x)
+        self.Dminus = CubicSpline(x[isfinite(self.Dminusarr)],self.Dminusarr[isfinite(self.Dminusarr)])
+        self.DDminus = CubicSpline(x[isfinite(self.dDminusarr)],self.dDminusarr[isfinite(self.dDminusarr)])
 
     # def vector_field(self,x, y,args):
     #     a = exp(x)
@@ -588,7 +660,8 @@ class GreenFunction(object):
             return quad(self.IV22t,self.lo,a,args=(a,), epsrel=self.epsrel)[0]
 
     def Y(self, a):
-        if self.quintessence: return -3/14.*self.G(a)**2 + self.mV11d(a) + self.mV12d(a)
+        # if self.quintessence: return -3/14.*self.G(a)**2 + self.mV11d(a) + self.mV12d(a)
+        if self.quintessence or self.EFTDE: return -3/14.*self.G(a)**2 + self.mV11d(a) + self.mV12d(a)
         else: return -3/14. + self.mV11d(a) + self.mV12d(a)
 
 
